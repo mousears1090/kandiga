@@ -62,12 +62,15 @@ kandiga update
 
 ## Performance
 
-Measured on M4 Mac Mini (16GB), Qwen3.5-35B-A3B-4bit:
+Measured on M4 Mac Mini (16GB):
 
-| Mode | Experts | Speed | RAM | Quality |
-|------|---------|-------|-----|---------|
-| Quality (K=8) | 8/256 per layer | ~3.5 tok/s | ~2 GB | Full |
-| Fast (K=4) | 4/256 per layer | ~6.5 tok/s | ~2 GB | Near-equal |
+| Model | Mode | Decode Speed | TTFT | RAM |
+|-------|------|-------------|------|-----|
+| Qwen3.5-35B | Quality (K=8) | 3.5 tok/s | ~5s | ~2 GB |
+| Qwen3.5-35B | Fast (K=4) | ~6.5 tok/s | ~3s | ~2 GB |
+| Qwen3.5-122B | Quality (K=8) | 0.56 tok/s | ~27s | ~4 GB |
+
+Install ZMLX for +45% speed on 35B: `pip install kandiga[fast]`
 
 ## KV Cache Compression (TurboQuant)
 
