@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <dispatch/dispatch.h>
+#include <pthread.h>
 
 #ifdef __ARM_NEON__
 #include <arm_neon.h>
@@ -192,6 +193,22 @@ void* bakan_cpu_expert_init(const char* dir, int nl) {
 }
 
 /* mlp */
+/* pthread worker for parallel expert compute (no ObjC autorelease pool) */
+typedef struct {
+    const Engine* eng;
+    const char* data;
+    const float* x;
+    float* out;
+    float* scratch;
+    int result;
+} ExpertWork;
+
+static void* _expert_thread(void* arg) {
+    ExpertWork* w = (ExpertWork*)arg;
+    w->result = expert_mlp(w->eng, w->data, w->x, w->out, w->scratch);
+    return NULL;
+}
+
 int bakan_cpu_expert_mlp(void* ptr, int li, const float* x,
                          const int32_t* idx, int K, float* out) {
     Engine* e=(Engine*)ptr;
@@ -199,7 +216,7 @@ int bakan_cpu_expert_mlp(void* ptr, int li, const float* x,
 
     int fd=e->layer_fds[li]; size_t esz=e->expert_size;
 
-    /* parallel pread */
+    /* parallel pread (GCD is safe for pure I/O — no ObjC involved) */
     __block int ioerr=0;
     dispatch_group_t g=dispatch_group_create();
     dispatch_queue_t q=dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0);
@@ -213,11 +230,22 @@ int bakan_cpu_expert_mlp(void* ptr, int li, const float* x,
     dispatch_group_wait(g,DISPATCH_TIME_FOREVER);
     if(ioerr) return -1;
 
-    /* serial compute */
+    /* parallel compute via GCD (scratch pre-allocated, zero malloc in block) */
     int h=e->hidden_size;
+    __block int cerr=0;
+    dispatch_group_t cg=dispatch_group_create();
+    dispatch_queue_t cq=dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0);
     for(int k=0;k<K;k++){
-        if(expert_mlp(e,e->expert_bufs[k],x,out+k*h,e->scratch_bufs[k])!=0) return -1;
+        const char* data=e->expert_bufs[k];
+        float* dst=out+k*h;
+        float* scr=e->scratch_bufs[k];
+        const Engine* eng=e;
+        dispatch_group_async(cg,cq,^{
+            if(expert_mlp(eng,data,x,dst,scr)!=0) cerr=1;
+        });
     }
+    dispatch_group_wait(cg,DISPATCH_TIME_FOREVER);
+    if(cerr) return -1;
     return 0;
 }
 
