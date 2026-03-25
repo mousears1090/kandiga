@@ -22,11 +22,11 @@
 using namespace metal;
 
 // bfloat16 support — use Metal's built-in if available, otherwise typedef
-#if __METAL_VERSION__ >= 310
-using bfloat = metal::bfloat;
-#else
-typedef half bfloat;  // fallback: treat bf16 as fp16 (close enough for inference)
-#endif
+
+
+
+
+
 
 // ---------------------------------------------------------------------------
 // Forward pass parameter buffer
