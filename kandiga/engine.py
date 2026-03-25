@@ -327,9 +327,9 @@ class _CPUSwitchGLU(nn.Module):
                 # Large model: skip entirely
                 target_shape = list(original_shape) + [self._hidden_size]
                 return mx.zeros(target_shape, dtype=x.dtype)
-            elif num_tokens > 8:
-                # Small model: only compute experts for every 8th token + last
-                # 8x fewer expert calls. Zeros for skipped positions.
+            elif num_tokens > 4:
+                # Small model: compute experts for every 4th token + last
+                # 4x fewer expert calls while preserving document understanding.
                 x_flat = x.reshape(-1, self._hidden_size)
                 idx_flat = indices.reshape(-1, K).astype(mx.int32)
                 is_bf16 = x_flat.dtype == mx.bfloat16
@@ -346,8 +346,8 @@ class _CPUSwitchGLU(nn.Module):
                 idx_np = np.array(idx_flat, copy=False).astype(np.int32)
                 out_np = np.zeros((num_tokens, K, self._hidden_size), dtype=np.float16)
 
-                # Sample every 8th token + always the last
-                sample = list(range(0, num_tokens, 8))
+                # Sample every 4th token + always the last
+                sample = list(range(0, num_tokens, 4))
                 if (num_tokens - 1) not in sample:
                     sample.append(num_tokens - 1)
 
