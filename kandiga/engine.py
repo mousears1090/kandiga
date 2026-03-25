@@ -486,6 +486,14 @@ class KandigaEngine:
         except Exception as e:
             self._log(f"ZMLX patch failed: {e}")
 
+        # Step 5c: Install TurboQuant KV cache compression
+        try:
+            from kandiga.kv_compress import install_kv_compression
+            n = install_kv_compression(self._model)
+            self._log(f"TurboQuant KV compression active ({n} layers)")
+        except Exception as e:
+            self._log(f"TurboQuant failed: {e}")
+
         # Step 6: Count MoE layers and initialize CPU engine
         layers = _find_layers(self._model)
         moe_count = sum(

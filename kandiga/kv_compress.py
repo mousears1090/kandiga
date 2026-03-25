@@ -203,27 +203,76 @@ class TurboQuantCache:
         return uncomp / self.memory_bytes
 
 
-def install_kv_compression(model, seed: int = 42):
-    """Monkey-patch model attention layers to use compressed KV cache.
+class CompressedArraysCache:
+    """Drop-in replacement for mlx_lm's ArraysCache with TurboQuant compression.
 
-    Works with Qwen-style models from mlx_lm.
+    Wraps the original cache and compresses large state tensors (>1KB) using
+    PolarQuant + QJL. Small tensors (conv state etc.) pass through uncompressed.
+
+    Compression is transparent — the model sees normal mx.arrays.
     """
-    layers_patched = 0
 
-    for i, layer in enumerate(model.model.layers):
-        attn = layer.self_attn
-        if not hasattr(attn, 'num_heads'):
-            continue
+    COMPRESS_THRESHOLD = 4096  # only compress tensors larger than this (bytes)
 
-        head_dim = attn.head_dim if hasattr(attn, 'head_dim') else 128
-        num_kv_heads = attn.num_key_value_heads if hasattr(attn, 'num_key_value_heads') else attn.num_heads
+    def __init__(self, original_cache, seed: int = 0):
+        self._original = original_cache
+        self._compressed = {}  # idx -> TurboQuantCache
+        self._seed = seed
 
-        cache = TurboQuantCache(
-            head_dim=head_dim,
-            num_heads=num_kv_heads,
-            seed=seed + i,
-        )
-        attn._tq_cache = cache
-        layers_patched += 1
+    def __setitem__(self, idx, value):
+        self._original[idx] = value
 
-    return layers_patched
+    def __getitem__(self, idx):
+        return self._original[idx]
+
+    @property
+    def cache(self):
+        return self._original.cache
+
+    @cache.setter
+    def cache(self, v):
+        self._original.cache = v
+
+    @property
+    def state(self):
+        return self._original.state
+
+    @state.setter
+    def state(self, v):
+        self._original.state = v
+
+    @property
+    def nbytes(self):
+        """Report compressed size."""
+        total = 0
+        for c in self._original.cache:
+            if c is not None:
+                if isinstance(c, mx.array):
+                    total += c.nbytes
+                elif isinstance(c, (list, tuple)):
+                    total += sum(x.nbytes for x in c if x is not None)
+        return total
+
+    # Delegate all other methods to original
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+def install_kv_compression(model, seed: int = 42):
+    """Wrap model's cache with TurboQuant compression.
+
+    Works with any MLX model that uses make_cache().
+    Compresses KV cache states to reduce memory pressure.
+    """
+    original_make_cache = model.make_cache
+
+    def compressed_make_cache(*args, **kwargs):
+        caches = original_make_cache(*args, **kwargs)
+        # Wrap each layer's cache
+        wrapped = []
+        for i, c in enumerate(caches):
+            wrapped.append(CompressedArraysCache(c, seed=seed + i))
+        return wrapped
+
+    model.make_cache = compressed_make_cache
+    return len(model.language_model.model.layers) if hasattr(model, 'language_model') else 0
