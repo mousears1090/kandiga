@@ -21,6 +21,7 @@ Documentation = "https://github.com/kantheon/kandiga#readme"
 [project.optional-dependencies]
 serve = ["fastapi", "uvicorn[standard]"]
 tools = ["duckduckgo-search"]
+fast = ["zmlx>=0.10.0"]
 
 [project.scripts]
 kandiga = "kandiga.cli:main"

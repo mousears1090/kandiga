@@ -344,6 +344,16 @@ class KandigaEngine:
             mx.eval(*shared)
         self._log("Shared parameters loaded to GPU")
 
+        # Step 5b: Apply ZMLX fused kernels (deltanet, norms, softmax)
+        try:
+            from zmlx.patch import patch as zmlx_patch
+            zmlx_patch(self._model)
+            self._log("ZMLX fused kernels applied")
+        except ImportError:
+            self._log("ZMLX not installed (pip install zmlx for +15% speed)")
+        except Exception as e:
+            self._log(f"ZMLX patch failed: {e}")
+
         # Step 6: Count MoE layers and initialize CPU engine
         layers = _find_layers(self._model)
         moe_count = sum(
