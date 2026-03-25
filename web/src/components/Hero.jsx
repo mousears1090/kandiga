@@ -67,10 +67,10 @@ export default function Hero() {
       {/* Headline */}
       <div className={`transition-all duration-700 delay-300 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}`}>
         <p className="text-xl sm:text-2xl md:text-3xl font-medium text-[var(--text-bright)] mb-4 tracking-tight">
-          35B intelligence. <span className="text-[var(--cyan)]">1.5GB memory.</span>
+          Giant models. <span className="text-[var(--cyan)]">Tiny memory.</span>
         </p>
         <p className="text-base md:text-lg text-[var(--text-muted)] max-w-lg mx-auto leading-relaxed">
-          Run massive MoE models on any Mac.
+          Run 35B–397B MoE models on any Mac with Selective Expert Materialization.
           No cloud. No API keys. No compromises.
         </p>
       </div>
