@@ -476,11 +476,9 @@ class KandigaEngine:
             mx.eval(*shared)
         self._log("Shared parameters loaded to GPU")
 
-        # Step 5b: Apply ZMLX fused kernels — explicitly enable deltanet + norms
+        # Step 5b: Apply ZMLX fused kernels — deltanet + norms
         try:
             from zmlx.patch import patch as zmlx_patch
-            # Force-enable deltanet (GatedDeltaNet attention) + norms + softmax
-            # Skip moe_mlp and swiglu_mlp (we handle experts on CPU)
             zmlx_patch(
                 self._model,
                 patterns=["deltanet", "rmsnorm", "softmax"],
@@ -491,7 +489,7 @@ class KandigaEngine:
         except Exception as e:
             self._log(f"ZMLX patch failed: {e}")
 
-        # Step 5c: Install TurboQuant KV cache compression
+        # Step 5d: Install TurboQuant KV cache compression
         try:
             from kandiga.kv_compress import install_kv_compression
             n = install_kv_compression(self._model)
