@@ -19,23 +19,24 @@ import numpy as np
 
 
 class FusedAttnLib:
-    """Ctypes wrapper for libkandiga_attn_lg.dylib."""
+    """Ctypes wrapper for Metal GPU fused attention."""
 
     def __init__(self):
         metal_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metal")
-        path = os.path.join(metal_dir, "libkandiga_attn_lg.dylib")
+        # Use Metal GPU version
+        path = os.path.join(metal_dir, "libkandiga_metal_attn_lg.dylib")
         if not os.path.exists(path):
             raise FileNotFoundError(f"Fused attention library not found at {path}")
 
         self._lib = ctypes.CDLL(path)
 
         # init
-        self._lib.kandiga_fused_attn_init.argtypes = [
+        self._lib.kandiga_metal_attn_init.argtypes = [
             ctypes.c_int] * 9
-        self._lib.kandiga_fused_attn_init.restype = ctypes.c_void_p
+        self._lib.kandiga_metal_attn_init.restype = ctypes.c_void_p
 
         # set_weights
-        self._lib.kandiga_fused_attn_set_weights.argtypes = [
+        self._lib.kandiga_metal_attn_set_weights.argtypes = [
             ctypes.c_void_p, ctypes.c_int,  # ptr, layer_idx
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,  # qkv
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,  # z
@@ -47,25 +48,16 @@ class FusedAttnLib:
             ctypes.c_void_p, ctypes.c_int,  # dt_bias
             ctypes.c_void_p, ctypes.c_int,  # norm_w
         ]
-        self._lib.kandiga_fused_attn_set_weights.restype = None
+        self._lib.kandiga_metal_attn_set_weights.restype = None
 
         # decode
-        self._lib.kandiga_fused_attn_decode.argtypes = [
+        self._lib.kandiga_metal_attn_decode.argtypes = [
             ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
-        self._lib.kandiga_fused_attn_decode.restype = ctypes.c_int
-
-        # decode_bf16
-        self._lib.kandiga_fused_attn_decode_bf16.argtypes = [
-            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
-        self._lib.kandiga_fused_attn_decode_bf16.restype = ctypes.c_int
-
-        # reset
-        self._lib.kandiga_fused_attn_reset.argtypes = [ctypes.c_void_p]
-        self._lib.kandiga_fused_attn_reset.restype = None
+        self._lib.kandiga_metal_attn_decode.restype = ctypes.c_int
 
         # destroy
-        self._lib.kandiga_fused_attn_destroy.argtypes = [ctypes.c_void_p]
-        self._lib.kandiga_fused_attn_destroy.restype = None
+        self._lib.kandiga_metal_attn_destroy.argtypes = [ctypes.c_void_p]
+        self._lib.kandiga_metal_attn_destroy.restype = None
 
 
 def _extract_qlinear(mod):
@@ -108,7 +100,7 @@ def install_fused_attention(model, lib: FusedAttnLib):
     value_dim = nv * dv
 
     # Init engine
-    eng = lib._lib.kandiga_fused_attn_init(
+    eng = lib._lib.kandiga_metal_attn_init(
         len(layers), args.hidden_size,
         key_dim, value_dim,
         nk, nv, dk, dv, ck,
@@ -134,7 +126,10 @@ def install_fused_attention(model, lib: FusedAttnLib):
         if not hasattr(attn, 'in_proj_qkv'):
             continue
 
-        mx.eval(*[v for _, v in tree_flatten(attn.parameters())])
+        # Eval attention weights for this layer only
+        attn_params = [v for _, v in tree_flatten(attn.parameters())]
+        mx.eval(*attn_params)
+        del attn_params  # free ref after eval
 
         qkv_w, qkv_s, qkv_b = _extract_qlinear(attn.in_proj_qkv)
         z_w, z_s, z_b = _extract_qlinear(attn.in_proj_z)
@@ -150,7 +145,7 @@ def install_fused_attention(model, lib: FusedAttnLib):
         def _p(arr):
             return arr.ctypes.data_as(ctypes.c_void_p)
 
-        lib._lib.kandiga_fused_attn_set_weights(
+        lib._lib.kandiga_metal_attn_set_weights(
             eng, i,
             _p(qkv_w), _p(qkv_s), _p(qkv_b), qkv_w.nbytes, qkv_s.nbytes,
             _p(z_w), _p(z_s), _p(z_b), z_w.nbytes, z_s.nbytes,
@@ -184,34 +179,22 @@ class _FusedGatedDeltaNet(nn.Module):
         if S > 1:
             return self.original(inputs, mask=mask, cache=cache)
 
-        # Decode (S=1): use fused C attention
-        x = inputs.reshape(-1, self._hidden)
+        # Decode (S=1): use fused Metal GPU attention
+        x = inputs.reshape(-1, self._hidden).astype(mx.float16)
         mx.eval(x)
 
-        is_bf16 = x.dtype == mx.bfloat16
-        x_np = np.array(x.view(mx.uint16) if is_bf16 else x.astype(mx.float32), copy=False)
-        out_np = np.empty_like(x_np)
+        x_np = np.array(x, copy=False)
+        out_np = np.empty((1, self._hidden), dtype=np.float16)
 
-        if is_bf16:
-            ret = self._lib._lib.kandiga_fused_attn_decode_bf16(
-                self._eng, self._layer_idx,
-                x_np.ctypes.data_as(ctypes.c_void_p),
-                out_np.ctypes.data_as(ctypes.c_void_p),
-            )
-        else:
-            ret = self._lib._lib.kandiga_fused_attn_decode(
-                self._eng, self._layer_idx,
-                x_np.ctypes.data_as(ctypes.c_void_p),
-                out_np.ctypes.data_as(ctypes.c_void_p),
-            )
+        ret = self._lib._lib.kandiga_metal_attn_decode(
+            self._eng, self._layer_idx,
+            x_np.ctypes.data_as(ctypes.c_void_p),
+            out_np.ctypes.data_as(ctypes.c_void_p),
+        )
 
         if ret != 0:
             # Fallback to MLX
             return self.original(inputs, mask=mask, cache=cache)
 
-        if is_bf16:
-            result = mx.array(out_np).view(mx.bfloat16)
-        else:
-            result = mx.array(out_np)
-
+        result = mx.array(out_np).astype(inputs.dtype)
         return result.reshape(B, S, self._hidden)
