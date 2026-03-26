@@ -4,6 +4,7 @@ import Terminal from './components/Terminal'
 import Stats from './components/Stats'
 import Features from './components/Features'
 import Compression from './components/Compression'
+import PersistentCache from './components/PersistentCache'
 import Architecture from './components/Architecture'
 import GetStarted from './components/GetStarted'
 import Footer from './components/Footer'
@@ -22,6 +23,8 @@ function App() {
         <Features />
         <div className="glow-line my-10 sm:my-16 md:my-20" />
         <Compression />
+        <div className="glow-line my-10 sm:my-16 md:my-20" />
+        <PersistentCache />
         <div className="glow-line my-10 sm:my-16 md:my-20" />
         <Architecture />
         <div className="glow-line my-10 sm:my-16 md:my-20" />

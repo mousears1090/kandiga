@@ -71,18 +71,60 @@ kandiga changelog
 
 ## Performance
 
-Measured on M4 Mac Mini (16GB), Qwen3.5-35B-A3B-4bit:
+Measured on M4 Mac Mini (16GB):
 
-| Mode | Decode Speed | TTFT (short) | TTFT (long) | RAM |
-|------|-------------|-------------|-------------|-----|
-| Quality (K=8) | 3.7 tok/s | ~5s | ~15s | ~2 GB |
-| Fast (K=4) | 6.5 tok/s | ~3s | ~8s | ~2 GB |
+| Model | Mode | Decode | TTFT (first turn) | TTFT (follow-up) | RAM |
+|-------|------|--------|-------------------|-------------------|-----|
+| Qwen3.5-35B | K=8 | 3.7 tok/s | 5-15s | **3-4s** | ~2 GB |
+| Qwen3.5-35B | K=4 | 6.5 tok/s | 3-8s | **3-4s** | ~2 GB |
+| Qwen3.5-122B | K=4 | 1.4 tok/s | 7-27s | **3-4s** | ~4 GB |
 
-Qwen3.5-122B-A10B-4bit:
+Key: follow-up TTFT is constant (3-4s) regardless of conversation length thanks to persistent KV cache.
 
-| Mode | Decode Speed | TTFT (short) | TTFT (long) | RAM |
-|------|-------------|-------------|-------------|-----|
-| Fast (K=4) | 1.4 tok/s | ~7s | ~27s | ~4 GB |
+## Persistent KV Cache (Conversation Memory)
+
+The biggest problem with local LLMs: every message re-processes the ENTIRE conversation history. Turn 30 re-reads turns 1-29 — even though the model already read them.
+
+Kandiga solves this with persistent KV cache:
+
+```
+Without persistent cache:
+  Turn 1:  8s    (reads invoice)
+  Turn 5:  25s   (re-reads invoice + 4 turns)
+  Turn 30: 2min+ (re-reads everything)
+
+With persistent cache:
+  Turn 1:  8s    (reads invoice once)
+  Turn 2:  3s    (only reads new question)
+  Turn 5:  3s    (only reads new question)
+  Turn 30: 3s    (only reads new question)
+```
+
+The model reads the conversation once and keeps its understanding in memory. Every follow-up only processes the new message. TTFT stays flat at 3-4 seconds regardless of conversation length.
+
+```python
+from kandiga.engine import KandigaEngine
+
+engine = KandigaEngine()
+engine.load()
+engine.start_session()
+
+# Turn 1: send a document (8s TTFT — processes the document)
+for token in engine.session_generate("Here is an invoice: ..."):
+    print(token, end="")
+
+# Turn 2: follow-up (3s TTFT — document already cached)
+for token in engine.session_generate("What is the most expensive item?"):
+    print(token, end="")
+
+# Turn 30: still 3s TTFT
+for token in engine.session_generate("Summarize everything"):
+    print(token, end="")
+
+engine.end_session()
+```
+
+Combined with TurboQuant (3.8x KV compression), conversations can run for 32K+ tokens before hitting memory limits.
 
 ## GPU Metal Prefill
 
