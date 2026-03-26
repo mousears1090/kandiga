@@ -424,11 +424,11 @@ class _CPUSwitchGLU(nn.Module):
         import ctypes
         num_unique = len(unique_experts)
 
-        # Free MLX buffer cache before disk reads — releases unified memory
-        # so expert file pages stay in OS page cache
         mx.clear_cache()
 
-        # ONE C call: parallel pread ALL unique experts (GCD dispatch)
+        # ONE C call: merged contiguous reads of unique experts.
+        # Sorts expert IDs, groups adjacent into ranges, reads each range
+        # as one pread. Reduces USB round-trips by ~7x vs individual reads.
         raw_buf = np.empty(num_unique * esz, dtype=np.uint8)
         unique_i32 = np.ascontiguousarray(unique_experts.astype(np.int32))
         self._cpu_lib._lib.bakan_cpu_expert_pread_batch(
@@ -698,6 +698,7 @@ class _CPUSwitchGLU(nn.Module):
             mx.eval(x_f16, idx_i32)
             x_view = x_f16
 
+
         idx_np = np.array(idx_i32, copy=False).astype(np.int32)
 
         # Track speculation accuracy (decode only)
@@ -857,6 +858,19 @@ class KandigaEngine:
         if shared:
             mx.eval(*shared)
         self._log("Shared parameters loaded to GPU")
+
+        # Step 5a: Free lazy expert weight mmap pages from safetensors.
+        # Expert weights come from our packed binary files (pread), not safetensors.
+        # Freeing these mmap references gives the OS more page cache for expert pread.
+        expert_params = [(k, v) for k, v in flat if self.EXPERT_PATTERN in k]
+        if expert_params:
+            import gc
+            # Delete lazy weight references from the model's parameter tree
+            from mlx.utils import tree_unflatten
+            zeroed = {k: mx.zeros((1,), dtype=mx.float16) for k, v in expert_params}
+            self._model.update(tree_unflatten(list(zeroed.items())))
+            gc.collect()
+            self._log(f"Freed {len(expert_params)} lazy expert weight refs (page cache freed)")
 
         # Step 5b: Apply ZMLX fused kernels — deltanet + norms
         try:
