@@ -996,9 +996,19 @@ class KandigaEngine:
             if skip_count > 0:
                 self._log(f"Layer skipping: {skip_count}/{moe_count} layers use shared expert only")
 
-        # Step 10: Pre-warm page cache (background thread reads likely experts)
-        if is_large and expert_size > 0:
-            self._prewarm_cache(packed_dir, moe_count, expert_size, hidden_size)
+        # Step 10: Pre-warm page cache with a quick dummy prefill.
+        # Runs one short inference through all 40 layers, touching expert pages.
+        # By the time the user types their first message, pages are warm.
+        if expert_size > 0:
+            try:
+                self._ready = True  # temporarily enable
+                self.start_session()
+                for _ in self.session_generate("Hi", max_tokens=1):
+                    pass
+                self.end_session()
+                self._ready = False  # reset, will be set below
+            except Exception:
+                pass
 
         self._log(f"Engine ready ({moe_idx} MoE layers, CPU expert wrappers installed)")
         self._ready = True
@@ -1304,6 +1314,14 @@ class KandigaEngine:
                 eos_ids = set(eid)
             elif eid is not None:
                 eos_ids = {eid}
+        # Qwen3.5: also stop on <|endoftext|> and <|im_start|> (new turn = stop)
+        for stop_tok in ['<|endoftext|>', '<|im_start|>']:
+            try:
+                ids = self._tokenizer.encode(stop_tok)
+                if len(ids) == 1:
+                    eos_ids.add(ids[0])
+            except:
+                pass
 
         response_tokens = []
         for _ in range(max_tokens):
