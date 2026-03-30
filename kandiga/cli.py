@@ -72,6 +72,23 @@ def main():
         help="HuggingFace model ID",
     )
 
+    # kandiga agent
+    agent_parser = subparsers.add_parser("agent", help="Agent mode — tools, skills, memory, macOS")
+    agent_parser.add_argument(
+        "--fast", action="store_true", help="K=4 mode"
+    )
+    agent_parser.add_argument(
+        "--model",
+        default="mlx-community/Qwen3.5-35B-A3B-4bit",
+        help="HuggingFace model ID",
+    )
+    agent_parser.add_argument(
+        "--web", action="store_true", help="Start web UI instead of terminal chat"
+    )
+    agent_parser.add_argument(
+        "--port", type=int, default=3000, help="Web UI port (default: 3000)"
+    )
+
     # kandiga bench
     subparsers.add_parser("bench", help="Run inference benchmarks")
 
@@ -87,7 +104,7 @@ def main():
     )
 
     # Check if any arg is a known subcommand
-    known_commands = {"setup", "chat", "serve", "bench", "update", "changelog"}
+    known_commands = {"setup", "chat", "serve", "agent", "bench", "update", "changelog"}
     has_subcommand = any(a in known_commands for a in sys.argv[1:])
 
     if not has_subcommand and len(sys.argv) > 1 and not all(a.startswith("-") for a in sys.argv[1:]):
@@ -134,6 +151,13 @@ def main():
             model=args.model,
             max_tokens=args.max_tokens,
         )
+    elif args.command == "agent":
+        if args.web:
+            from kandiga.agents.agent_serve import run_agent_serve
+            run_agent_serve(port=args.port, fast=args.fast, model=args.model)
+        else:
+            from kandiga.agents.agent_chat import run_agent_chat
+            run_agent_chat(fast=args.fast, model=args.model)
     elif args.command == "serve":
         from kandiga.serve import run_serve
 

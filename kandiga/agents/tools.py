@@ -1,0 +1,165 @@
+"""Tool registry and filesystem/shell tools — typed results."""
+
+from __future__ import annotations
+
+import glob
+import os
+import subprocess
+import time
+from typing import Any, Callable, Dict, List, Set
+
+from kandiga.agents.protocol import ToolCall, ToolResult
+
+
+class ToolSpec:
+    def __init__(self, name: str, description: str, args_schema: Dict[str, str], func: Callable):
+        self.name = name
+        self.description = description
+        self.args_schema = args_schema
+        self.func = func
+
+    def describe(self) -> str:
+        args_str = ", ".join(f"{k}: {v}" for k, v in self.args_schema.items())
+        return f"- {self.name}({args_str}): {self.description}"
+
+
+class ToolRegistry:
+    def __init__(self):
+        self._tools: Dict[str, ToolSpec] = {}
+
+    def register(self, name: str, description: str, args_schema: Dict[str, str], func: Callable):
+        self._tools[name] = ToolSpec(name, description, args_schema, func)
+
+    def has_tool(self, name: str) -> bool:
+        return name in self._tools
+
+    @property
+    def tool_names(self) -> Set[str]:
+        return set(self._tools.keys())
+
+    def describe_tools(self) -> str:
+        return "\n".join(s.describe() for s in self._tools.values())
+
+    def execute(self, call: ToolCall) -> ToolResult:
+        t0 = time.time()
+        if call.tool not in self._tools:
+            return ToolResult(tool=call.tool, args=call.args, output=None,
+                              success=False, error=f"Unknown tool: {call.tool}")
+        try:
+            result = self._tools[call.tool].func(**call.args)
+            ms = int((time.time() - t0) * 1000)
+            output_str = str(result) if result is not None else ""
+            is_err = output_str.startswith("Error")
+            return ToolResult(tool=call.tool, args=call.args, output=result,
+                              success=not is_err, error=output_str if is_err else None, duration_ms=ms)
+        except Exception as e:
+            ms = int((time.time() - t0) * 1000)
+            return ToolResult(tool=call.tool, args=call.args, output=None,
+                              success=False, error=str(e), duration_ms=ms)
+
+
+# --- Built-in tools ---
+
+def read_file(path: str) -> str:
+    path = os.path.expanduser(path)
+    if not os.path.isfile(path):
+        return f"Error: file not found: {path}"
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read() or "(empty file)"
+    except Exception as e:
+        return f"Error reading {path}: {e}"
+
+
+def write_file(path: str, content: str) -> str:
+    path = os.path.expanduser(path)
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            n = f.write(content)
+        return f"Wrote {n} bytes to {path}"
+    except Exception as e:
+        return f"Error writing {path}: {e}"
+
+
+def list_dir(path: str = ".") -> str:
+    path = os.path.expanduser(path)
+    if not os.path.isdir(path):
+        return f"Error: not a directory: {path}"
+    try:
+        entries = sorted(os.listdir(path))
+        if not entries:
+            return "(empty directory)"
+        lines = []
+        for e in entries:
+            full = os.path.join(path, e)
+            lines.append(f"  {e}{'/' if os.path.isdir(full) else ''}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error listing {path}: {e}"
+
+
+def search_files(pattern: str, path: str = ".") -> str:
+    path = os.path.expanduser(path)
+    try:
+        matches = glob.glob(os.path.join(path, "**", pattern), recursive=True)
+        if not matches:
+            return f"No files matching '{pattern}' in {path}"
+        return "\n".join(sorted(matches)[:50])
+    except Exception as e:
+        return f"Error searching: {e}"
+
+
+def run_shell(command: str) -> str:
+    if not command or not command.strip():
+        return "Error: empty command"
+    dangerous = ["rm -rf /", "rm -rf ~", "mkfs", ": (){ :|:& };:"]
+    for d in dangerous:
+        if d in command:
+            return "Error: blocked dangerous command"
+    try:
+        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            out = f"Error (exit {r.returncode}): {r.stderr.strip()}"
+            if r.stdout:
+                out += f"\n{r.stdout.strip()}"
+            return out
+        return r.stdout[:10000] if r.stdout.strip() else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: timed out after 30s"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def default_tools() -> ToolRegistry:
+    reg = ToolRegistry()
+    reg.register("read_file", "Read a file", {"path": "str"}, read_file)
+    reg.register("write_file", "Write a file", {"path": "str", "content": "str"}, write_file)
+    reg.register("list_dir", "List directory", {"path": "str"}, list_dir)
+    reg.register("search_files", "Search for files", {"pattern": "str", "path": "str"}, search_files)
+    reg.register("run_shell", "Run a shell command", {"command": "str"}, run_shell)
+    # Web search — try ddgs (new name) then duckduckgo_search (old name)
+    _ddgs_cls = None
+    try:
+        from ddgs import DDGS as _ddgs_cls
+    except ImportError:
+        try:
+            from duckduckgo_search import DDGS as _ddgs_cls
+        except ImportError:
+            pass
+
+    if _ddgs_cls:
+        _DDGS = _ddgs_cls
+
+        def web_search(query: str, max_results: int = 5) -> str:
+            try:
+                with _DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=max_results))
+                if not results:
+                    return f"No results for: {query}"
+                return "\n".join(f"- {r.get('title','')}\n  {r.get('href','')}\n  {r.get('body','')[:200]}" for r in results)
+            except Exception as e:
+                return f"Error searching: {e}"
+
+        reg.register("web_search", "Search the web", {"query": "str"}, web_search)
+    return reg
